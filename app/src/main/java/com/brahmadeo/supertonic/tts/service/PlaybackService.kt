@@ -597,63 +597,97 @@ class PlaybackService : Service(), SupertonicTTS.ProgressListener, AudioManager.
     }
 
     override fun onAudioFocusChange(focusChange: Int) {
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> stopServicePlayback()
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                if (isPlaying) {
-                    resumeOnFocusGain = true
-                    isPlaying = false
-                    try {
-                        if (audioTrack?.state == AudioTrack.STATE_INITIALIZED) {
-                            audioTrack?.pause()
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error pausing on focus loss", e)
-                    }
-                    notifyListenerState(false)
-                    updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+        try {
+            when (focusChange) {
+                AudioManager.AUDIOFOCUS_LOSS -> {
+                    Log.i(TAG, "Lost audio focus permanently")
+                    stopServicePlayback()
                 }
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                    if (isPlaying) {
+                        Log.i(TAG, "Lost transient audio focus")
+                        resumeOnFocusGain = true
+                        isPlaying = false
+                        try {
+                            if (audioTrack?.state == AudioTrack.STATE_INITIALIZED) {
+                                audioTrack?.pause()
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error pausing on transient focus loss", e)
+                        }
+                        notifyListenerState(false)
+                        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                    }
+                }
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    try {
+                        Log.d(TAG, "Audio focus request to duck volume")
+                        audioTrack?.setVolume(0.2f)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to set duck volume", e)
+                    }
+                }
+                AudioManager.AUDIOFOCUS_GAIN -> {
+                    try {
+                        audioTrack?.setVolume(1.0f)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to restore normal volume", e)
+                    }
+                    if (resumeOnFocusGain) {
+                        Log.d(TAG, "Gained audio focus, resuming playback")
+                        play()
+                    }
+                }
+                else -> Log.w(TAG, "Unhandled audio focus change: $focusChange")
             }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                try {
-                    audioTrack?.setVolume(0.2f)
-                } catch (_: Exception) {}
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                try {
-                    audioTrack?.setVolume(1.0f)
-                } catch (_: Exception) {}
-                if (resumeOnFocusGain) play()
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling audio focus change", e)
         }
     }
 
     fun exportAudio(text: String, lang: String, stylePath: String, speed: Float, steps: Int, outputFile: File) {
+        // VULN-004 fix: Validate inputs before processing
+        if (text.isBlank() || lang.isBlank() || stylePath.isBlank()) {
+            Log.w(TAG, "Export: Invalid input parameters - empty values detected")
+            notifyListenerExportComplete(false, "")
+            return
+        }
+
+        if (!outputFile.parentFile?.exists() == true) {
+            Log.w(TAG, "Export: Output directory does not exist: ${outputFile.parent}")
+            notifyListenerExportComplete(false, "")
+            return
+        }
+
         serviceScope.launch {
             if (synthesisJob?.isActive == true) {
                 SupertonicTTS.setCancelled(true)
                 synthesisJob?.cancelAndJoin()
             }
-            
+
             stopPlayback(removeNotification = false)
             SupertonicTTS.setCancelled(false)
             isSynthesizing = true
             notifyListenerState(false)
             startForegroundService(getString(R.string.notif_exporting), false)
-            
+
             synthesisJob = launch(Dispatchers.IO) {
                 var exportSuccess = false
+                var errorMessage = ""
                 try {
-                    val sentences = textNormalizer.splitIntoSentences(text, lang)
+                    val sentences = textNormalizer.splitIntoSentences(text.trim(), lang)
                     if (sentences.isEmpty()) {
-                        Log.w(TAG, "Export: No sentences found")
+                        Log.w(TAG, "Export: No valid sentences found after normalization")
                         return@launch
                     }
 
                     val outputStream = ByteArrayOutputStream()
                     for ((index, sentence) in sentences.withIndex()) {
-                        if (!isActive || SupertonicTTS.isCancelled()) break
-                        
+                        if (!isActive || SupertonicTTS.isCancelled()) {
+                            Log.i(TAG, "Export cancelled at sentence $index")
+                            break
+                        }
+
                         withContext(Dispatchers.Main) {
                             notifyListenerProgress(index + 1, sentences.size)
                         }
@@ -662,25 +696,57 @@ class PlaybackService : Service(), SupertonicTTS.ProgressListener, AudioManager.
                         val isAdvancedEnabled = prefs.getBoolean("is_advanced_normalization", false)
                         val normalizedText = textNormalizer.normalize(sentence, lang, isAdvancedEnabled)
 
-                        val audioData = SupertonicTTS.generateAudio(normalizedText, lang, stylePath, speed, 0.0f, steps, VOLUME_BOOST_FACTOR, null)
+                        if (normalizedText.isBlank()) {
+                            Log.w(TAG, "Skipping empty normalized sentence at index $index")
+                            continue
+                        }
+
+                        val audioData = SupertonicTTS.generateAudio(
+                            normalizedText,
+                            lang,
+                            stylePath,
+                            speed,
+                            0.0f,
+                            steps,
+                            VOLUME_BOOST_FACTOR,
+                            null
+                        )
+
                         if (audioData != null && audioData.isNotEmpty()) {
-                            outputStream.write(audioData)
+                            try {
+                                outputStream.write(audioData)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to write audio data to stream", e)
+                                break
+                            }
                         } else if (SupertonicTTS.isCancelled()) {
+                            Log.i(TAG, "Export cancelled during synthesis")
                             break
+                        } else {
+                            Log.w(TAG, "Empty audio data received for sentence at index $index")
                         }
                     }
-                    
+
                     if (isActive && !SupertonicTTS.isCancelled() && outputStream.size() > 0) {
-                        WavUtils.saveWav(outputFile, outputStream.toByteArray(), SupertonicTTS.getAudioSampleRate())
-                        exportSuccess = true
+                        try {
+                            WavUtils.saveWav(outputFile, outputStream.toByteArray(), SupertonicTTS.getAudioSampleRate())
+                            exportSuccess = true
+                            Log.i(TAG, "Export completed successfully: ${outputFile.absolutePath}")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to save exported audio file", e)
+                            errorMessage = e.message ?: "Unknown save error"
+                        }
+                    } else {
+                        Log.w(TAG, "Export incomplete - no audio data or cancelled")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Export failed", e)
+                    Log.e(TAG, "Export failed with exception", e)
+                    errorMessage = e.message ?: "Unknown export error"
                 } finally {
                     withContext(Dispatchers.Main) {
                         isSynthesizing = false
                         stopForeground(STOP_FOREGROUND_REMOVE)
-                        notifyListenerExportComplete(exportSuccess, outputFile.absolutePath)
+                        notifyListenerExportComplete(exportSuccess, if (exportSuccess) outputFile.absolutePath else errorMessage)
                         notifyListenerState(false)
                     }
                 }

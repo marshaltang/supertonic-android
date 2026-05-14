@@ -1,0 +1,47 @@
+require 'fastlane/plugin/pgyer'
+
+default_platform(:android)
+
+platform :android do
+  desc "Build and upload to PGYER"
+  lane :upload_to_pgyer do
+    # Build the APK
+    gradle(
+      task: "assembleRelease",
+      build_type: "release"
+    )
+
+    # Upload to PGYER
+    pgyer(
+      api_key: "",
+      apk: "./app/build/outputs/apk/release/app-release.apk",
+      password: "123456",
+      update_description: "Auto-build from Fastlane"
+    )
+  end
+
+  desc "Quick upload to PGYER (uses existing APK)"
+  lane :quick_upload do
+    pgyer(
+      api_key: "",
+      apk: "./app/build/outputs/apk/debug/app-debug.apk",
+      password: "123456",
+      update_description: "Debug build from Fastlane"
+    )
+  end
+
+  desc "Build debug version and upload"
+  lane :debug_upload do
+    gradle(
+      task: "assembleDebug",
+      build_type: "debug"
+    )
+
+    pgyer(
+      api_key: "",
+      apk: "./app/build/outputs/apk/debug/app-debug.apk",
+      password: "123456",
+      update_description: "Debug build from Fastlane"
+    )
+  end
+end

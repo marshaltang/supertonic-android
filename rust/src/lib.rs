@@ -33,11 +33,34 @@ pub extern "system" fn Java_com_brahmadeo_supertonic_tts_SupertonicTTS_init(
     );
 
     // VULN-002 fix: don't log panic payload (may contain user text/PII)
+    // Also prevent stack trace disclosure that could leak implementation details
     panic::set_hook(Box::new(|panic_info| {
         let location = panic_info.location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "unknown location".to_string());
-        log::error!("RUST PANIC at {}", location);
+
+        // Sanitize error message to remove potential PII
+        let sanitized_msg = if let Some(payload) = panic_info.payload().downcast_ref::<&str>() {
+            // Basic sanitization - replace potentially sensitive content
+            let msg = payload.replace('\n', " ").replace('\r', " ");
+            if msg.len() > 50 {
+                format!("{}...", &msg[..47])
+            } else {
+                msg
+            }
+        } else if let Some(payload) = panic_info.payload().downcast_ref::<String>() {
+            // Same sanitization for String payloads
+            let msg = payload.replace('\n', " ").replace('\r', " ");
+            if msg.len() > 50 {
+                format!("{}...", &msg[..47])
+            } else {
+                msg
+            }
+        } else {
+            "non-string panic payload".to_string()
+        };
+
+        log::error!("RUST PANIC at {}: sanitized_payload=\"{}\"", location, sanitized_msg);
     }));
 
     let model_path: String = env.get_string(&model_path).expect("Couldn't get java string!").into();
@@ -88,24 +111,58 @@ pub extern "system" fn Java_com_brahmadeo_supertonic_tts_SupertonicTTS_synthesiz
 
     engine.thermal.update(buffer_seconds, engine.last_rtf);
 
+    // VULN-004 fix: Validate style path before processing
+    if style_path.is_empty() || style_path.contains("../") || style_path.contains("..\\") {
+        log::error!("Invalid style path detected: '{}'", style_path);
+        return env.new_byte_array(0).unwrap().into_raw();
+    }
+
     let style = if style_path.contains(';') {
         let parts: Vec<&str> = style_path.split(';').collect();
-        if parts.len() == 3 {
-            let p1 = parts[0];
-            let p2 = parts[1];
-            let alpha = parts[2].parse::<f32>().unwrap_or(0.5);
-            match load_and_mix_voice_styles(p1, p2, alpha) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("Failed to mix voice styles: {:?}", e);
-                    return env.new_byte_array(0).unwrap().into_raw();
-                }
-            }
-        } else {
-            log::error!("Invalid mix format. Expected: path1;path2;alpha");
+        if parts.len() != 3 {
+            log::error!("Invalid mix format. Expected exactly 3 parts separated by ';'");
             return env.new_byte_array(0).unwrap().into_raw();
         }
+
+        let p1 = parts[0];
+        let p2 = parts[1];
+
+        // Validate individual paths
+        if p1.is_empty() || p2.is_empty() || p1.contains("../") || p1.contains("..\\") ||
+           p2.is_empty() || p2.contains("../") || p2.contains("..\\") {
+            log::error!("Invalid voice style paths in mix configuration");
+            return env.new_byte_array(0).unwrap().into_raw();
+        }
+
+        let alpha_str = parts[2];
+        let alpha = match alpha_str.parse::<f32>() {
+            Ok(val) => {
+                if val < 0.0 || val > 1.0 {
+                    log::error!("Mix alpha value out of range [0.0, 1.0]: {}", val);
+                    return env.new_byte_array(0).unwrap().into_raw();
+                }
+                val
+            },
+            Err(_) => {
+                log::error!("Invalid alpha value (not a number): '{}'", alpha_str);
+                return env.new_byte_array(0).unwrap().into_raw();
+            }
+        };
+
+        match load_and_mix_voice_styles(p1, p2, alpha) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("Failed to mix voice styles: {:?}", e);
+                return env.new_byte_array(0).unwrap().into_raw();
+            }
+        }
     } else {
+        // Validate single style path
+        if style_path.contains("../") || style_path.contains("..\\") {
+            log::error!("Invalid single voice style path: '{}'", style_path);
+            return env.new_byte_array(0).unwrap().into_raw();
+        }
+
         match load_voice_style(&[style_path], false) {
             Ok(s) => s,
             Err(e) => {

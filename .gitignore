@@ -31,3 +31,5 @@ GEMINI.md
 # Build Artifacts
 app/release/
 
+# fastlane
+fastlane/report.xml

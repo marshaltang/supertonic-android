@@ -1,0 +1,7 @@
+app_identifier "com.brahmadeo.supertonic.tts" # The bundle identifier of your app
+
+# For sharing uploaded builds between team members
+# apple_id "your-apple-id@example.com"
+
+# For testing with TestFlight
+# itc_team_id "XXXXXXXXXX"

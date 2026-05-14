@@ -80,32 +80,60 @@ object SupertonicTTS {
 
     // Called from JNI
     fun notifyProgress(current: Int, total: Int) {
-        val ctx = currentSession.get()
+        // VULN-003 fix: Get session context atomically
+        val ctx = synchronized(this) { currentSession.get() }
         val sid = ctx?.sid ?: 0L
         val listener = ctx?.listener
-        
+
         // Priority to task-specific listener
         if (listener != null) {
-            listener.onProgress(sid, current, total)
+            try {
+                listener.onProgress(sid, current, total)
+            } catch (e: Exception) {
+                Log.w("SupertonicTTS", "Progress listener error", e)
+            }
         } else {
             // Only notify global listeners if no specific task listener is set
-            for (l in listeners) l.onProgress(sid, current, total)
+            for (l in listeners) {
+                try {
+                    l.onProgress(sid, current, total)
+                } catch (e: Exception) {
+                    Log.w("SupertonicTTS", "Global progress listener error", e)
+                }
+            }
         }
     }
 
     // Called from JNI
     fun notifyAudioChunk(data: ByteArray) {
-        val ctx = currentSession.get()
+        // VULN-003 fix: Get session context atomically and validate audio data
+        val ctx = synchronized(this) { currentSession.get() }
         val sid = ctx?.sid ?: 0L
         val listener = ctx?.listener
-        
+
+        // Validate audio data before processing
+        if (data.isEmpty()) {
+            Log.w("SupertonicTTS", "Received empty audio chunk")
+            return
+        }
+
         // STRICT ISOLATION: Audio chunks ONLY go to the requester
         if (listener != null) {
-            listener.onAudioChunk(sid, data)
+            try {
+                listener.onAudioChunk(sid, data)
+            } catch (e: Exception) {
+                Log.e("SupertonicTTS", "Audio chunk listener error", e)
+            }
         } else {
             // Only if no specific task listener is active (e.g. legacy app call)
-            // we send to global listeners
-            for (l in listeners) l.onAudioChunk(sid, data)
+            // we send to global listeners - but with error handling
+            for (l in listeners) {
+                try {
+                    l.onAudioChunk(sid, data)
+                } catch (e: Exception) {
+                    Log.w("SupertonicTTS", "Global audio listener error", e)
+                }
+            }
         }
     }
 
@@ -126,22 +154,36 @@ object SupertonicTTS {
 
     @Synchronized
     fun generateAudio(text: String, lang: String, stylePath: String, speed: Float = 1.0f, bufferDuration: Float = 0.0f, steps: Int = 5, gain: Float = 1.0f, listener: ProgressListener? = null): ByteArray? {
+        // VULN-001 fix: Add comprehensive null pointer checks
         if (nativePtr == 0L) {
-            Log.e("SupertonicTTS", "Engine not initialized")
+            Log.e("SupertonicTTS", "Engine not initialized - cannot generate audio")
             return null
         }
-        
+
+        // Validate inputs before proceeding
+        if (text.isEmpty() || lang.isEmpty() || stylePath.isEmpty()) {
+            Log.w("SupertonicTTS", "Invalid input parameters - empty values detected")
+            return null
+        }
+
         val sid = ++sessionIdCounter
-        currentSession.set(SessionContext(sid, listener))
-        
+
+        // VULN-003 fix: Use synchronized block for complete atomic session context update
+        synchronized(this) {
+            currentSession.set(SessionContext(sid, listener))
+        }
+
         try {
             val data = synthesize(nativePtr, text, lang, stylePath, speed, bufferDuration, steps, gain)
             return if (data.isNotEmpty()) data else null
         } catch (e: Exception) {
-            Log.e("SupertonicTTS", "Native synthesis exception: ${e.message}")
+            Log.e("SupertonicTTS", "Native synthesis exception: ${e.message}", e)
             return null
         } finally {
-            currentSession.set(null)
+            // VULN-003 fix: Atomic cleanup within synchronized context
+            synchronized(this) {
+                currentSession.set(null)
+            }
         }
     }
 

@@ -149,15 +149,85 @@ class MainActivity : ComponentActivity() {
 
     private fun prepareTextForTts(text: String?, lang: String): String {
         if (text.isNullOrEmpty()) return ""
+
+        // VULN-004 fix: Validate language code before processing
+        if (!isValidLanguageCode(lang)) {
+            Log.w("MainActivity", "Invalid language code detected: $lang")
+            return ""
+        }
+
         val trimmed = text.trim()
-        
+
         // Append " ." to prevent diffusion model from cutting off abruptly at the end
         // RESTRICTED for Korean
         if (lang.lowercase().startsWith("ko")) {
             return trimmed
         }
-        
+
         return if (trimmed.endsWith(" .")) trimmed else "$trimmed ."
+    }
+
+    // VULN-004 fix: Add comprehensive input validation methods
+    private fun isValidInputText(text: String): Boolean {
+        if (text.isEmpty()) return false
+
+        // Check for reasonable length limits
+        if (text.length > 5000) { // Limit to prevent DoS through very long texts
+            Log.w("MainActivity", "Text too long: ${text.length} characters")
+            return false
+        }
+
+        // Check for potentially malicious content
+        val maliciousPatterns = listOf(
+            Regex("<script[^>]*>", RegexOption.IGNORE_CASE),
+            Regex("javascript:", RegexOption.IGNORE_CASE),
+            Regex("data:text/", RegexOption.IGNORE_CASE),
+            Regex("\\.\.[/\\]\\\\]", RegexOption.REGEX_DEFAULT) // Path traversal attempts
+        )
+
+        for (pattern in maliciousPatterns) {
+            if (pattern.containsMatchIn(text)) {
+                Log.w("MainActivity", "Potentially malicious content detected in text")
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private fun isValidVoiceFile(voiceFile: String): Boolean {
+        if (voiceFile.isEmpty()) return false
+
+        // Validate voice file name format
+        val validPattern = Regex("^[a-zA-Z0-9_\\-]+\\.json$")
+        return validPattern.matches(voiceFile)
+    }
+
+    private fun isValidStylePath(stylePath: String): Boolean {
+        if (stylePath.isEmpty()) return false
+
+        // Prevent directory traversal attacks
+        if (stylePath.contains("../") || stylePath.contains("..\\") ||
+            stylePath.startsWith("/") || stylePath.contains("//")) {
+            Log.w("MainActivity", "Directory traversal attempt detected in style path: $stylePath")
+            return false
+        }
+
+        // Ensure it's a relative path within expected directories
+        val parts = stylePath.split(File.separator)
+        for (part in parts) {
+            if (part.isEmpty() || part == "." || part == "..") {
+                Log.w("MainActivity", "Invalid path component detected: $part")
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private fun isValidLanguageCode(lang: String): Boolean {
+        val validLanguages = setOf("en", "fr", "pt", "es", "ko")
+        return lang.isNotEmpty() && lang.length <= 10 && validLanguages.contains(lang.lowercase())
     }
 
     private val historyLauncher = registerForActivityResult(
@@ -613,6 +683,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun generateAndPlay(text: String) {
+        // VULN-004 fix: Validate input text and voice selection
+        if (!isValidInputText(text)) {
+            Log.w("MainActivity", "Invalid input text detected")
+            return
+        }
+
+        if (!isValidVoiceFile(viewModel.selectedVoiceFile.value)) {
+            Log.w("MainActivity", "Invalid voice file selected: ${viewModel.selectedVoiceFile.value}")
+            return
+        }
+
         val isReady = if (currentModelVersion == "v1") AssetManager.isV1Ready(this) else AssetManager.isV2Ready(this)
         if (!isReady) {
             startDownload(currentModelVersion)
@@ -622,6 +703,14 @@ class MainActivity : ComponentActivity() {
         if (viewModel.isInitializing.value) return
 
         var stylePath = File(filesDir, "$currentModelVersion/voice_styles/${viewModel.selectedVoiceFile.value}").absolutePath
+
+        // VULN-004 fix: Validate style path to prevent directory traversal
+        if (!isValidStylePath(stylePath)) {
+            Log.w("MainActivity", "Invalid style path detected: $stylePath")
+            startDownload(currentModelVersion)
+            return
+        }
+
         if (!File(stylePath).exists()) {
              // This case should be covered by isReady, but as a fallback:
              startDownload(currentModelVersion)
@@ -654,6 +743,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addToQueue(text: String) {
+        // VULN-004 fix: Validate input before queueing
+        if (!isValidInputText(text)) {
+            Log.w("MainActivity", "Invalid text for queueing: $text")
+            return
+        }
+
+        if (!isValidVoiceFile(viewModel.selectedVoiceFile.value)) {
+            Log.w("MainActivity", "Invalid primary voice file: ${viewModel.selectedVoiceFile.value}")
+            return
+        }
+
+        if (viewModel.isMixingEnabled.value && !isValidVoiceFile(viewModel.selectedVoiceFile2.value)) {
+            Log.w("MainActivity", "Invalid secondary voice file: ${viewModel.selectedVoiceFile2.value}")
+            return
+        }
+
         val isReady = if (currentModelVersion == "v1") AssetManager.isV1Ready(this) else AssetManager.isV2Ready(this)
         if (!isReady) {
             startDownload(currentModelVersion)
@@ -663,9 +768,23 @@ class MainActivity : ComponentActivity() {
         if (viewModel.isInitializing.value) return
 
         var stylePath = File(filesDir, "$currentModelVersion/voice_styles/${viewModel.selectedVoiceFile.value}").absolutePath
+
+        // VULN-004 fix: Validate and sanitize mixed voice paths
         if (viewModel.isMixingEnabled.value) {
             val stylePath2 = File(filesDir, "$currentModelVersion/voice_styles/${viewModel.selectedVoiceFile2.value}").absolutePath
-            stylePath = "$stylePath;$stylePath2;${viewModel.mixAlpha.floatValue}"
+
+            if (!isValidStylePath(stylePath) || !isValidStylePath(stylePath2)) {
+                Log.w("MainActivity", "Invalid mixed voice paths detected")
+                return
+            }
+
+            val alpha = viewModel.mixAlpha.floatValue
+            if (alpha < 0.0f || alpha > 1.0f) {
+                Log.w("MainActivity", "Invalid mix alpha value: $alpha")
+                return
+            }
+
+            stylePath = "$stylePath;$stylePath2;$alpha"
         }
 
         try {
@@ -684,6 +803,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun playNow(text: String) {
+        // VULN-004 fix: Validate input before playback
+        if (!isValidInputText(text)) {
+            Log.w("MainActivity", "Invalid text for immediate playback: $text")
+            return
+        }
+
+        if (!isValidVoiceFile(viewModel.selectedVoiceFile.value)) {
+            Log.w("MainActivity", "Invalid voice file for playback: ${viewModel.selectedVoiceFile.value}")
+            return
+        }
+
         val isReady = if (currentModelVersion == "v1") AssetManager.isV1Ready(this) else AssetManager.isV2Ready(this)
         if (!isReady) {
             startDownload(currentModelVersion)
@@ -693,10 +823,25 @@ class MainActivity : ComponentActivity() {
         if (viewModel.isInitializing.value) return
 
         var stylePath = File(filesDir, "$currentModelVersion/voice_styles/${viewModel.selectedVoiceFile.value}").absolutePath
+
+        // VULN-004 fix: Validate mixed voice paths for immediate playback
         if (viewModel.isMixingEnabled.value) {
             val stylePath2 = File(filesDir, "$currentModelVersion/voice_styles/${viewModel.selectedVoiceFile2.value}").absolutePath
-            stylePath = "$stylePath;$stylePath2;${viewModel.mixAlpha.floatValue}"
+
+            if (!isValidStylePath(stylePath) || !isValidStylePath(stylePath2)) {
+                Log.w("MainActivity", "Invalid mixed voice paths for playback")
+                return
+            }
+
+            val alpha = viewModel.mixAlpha.floatValue
+            if (alpha < 0.0f || alpha > 1.0f) {
+                Log.w("MainActivity", "Invalid mix alpha value for playback: $alpha")
+                return
+            }
+
+            stylePath = "$stylePath;$stylePath2;$alpha"
         }
+
         launchPlaybackActivity(text, stylePath)
     }
 
@@ -713,16 +858,26 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent == null) return
-        if (intent.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
-            if (!sharedText.isNullOrEmpty()) {
-                viewModel.inputText.value = prepareTextForTts(sharedText, viewModel.currentLang.value)
+
+        // VULN-004 fix: Validate intent data before processing
+        try {
+            if (intent.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+                val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
+                if (!sharedText.isNullOrEmpty() && isValidInputText(sharedText)) {
+                    viewModel.inputText.value = prepareTextForTts(sharedText, viewModel.currentLang.value)
+                } else {
+                    Log.w("MainActivity", "Invalid or empty shared text from intent")
+                }
+            } else {
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: intent.data?.getQueryParameter("text") ?: ""
+                if (!text.isNullOrEmpty() && isValidInputText(text)) {
+                    viewModel.inputText.value = prepareTextForTts(text, viewModel.currentLang.value)
+                } else {
+                    Log.w("MainActivity", "Invalid or empty text parameter from intent")
+                }
             }
-        } else {
-            val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: intent.data?.getQueryParameter("text")
-            if (!text.isNullOrEmpty()) {
-                viewModel.inputText.value = prepareTextForTts(text, viewModel.currentLang.value)
-            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error handling intent", e)
         }
     }
 
