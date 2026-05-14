@@ -182,7 +182,7 @@ class MainActivity : ComponentActivity() {
             Regex("<script[^>]*>", RegexOption.IGNORE_CASE),
             Regex("javascript:", RegexOption.IGNORE_CASE),
             Regex("data:text/", RegexOption.IGNORE_CASE),
-            Regex("\\.\.[/\\]\\\\]", RegexOption.REGEX_DEFAULT) // Path traversal attempts
+            Regex("\\.\\.\\\\[/\\]\\]") // Path traversal attempts
         )
 
         for (pattern in maliciousPatterns) {

@@ -98,8 +98,8 @@ android {
         applicationId "com.brahmadeo.supertonic.tts"
         minSdk 24
         targetSdk 36
-        versionCode 26051401
-        versionName "26.0514.01"
+        versionCode 26051402
+        versionName "26.0514.02"
         
         ndk {
             abiFilters "arm64-v8a"

@@ -32,4 +32,5 @@ GEMINI.md
 app/release/
 
 # fastlane
+fastlane/Fastfile
 fastlane/report.xml

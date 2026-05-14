@@ -653,7 +653,7 @@ class PlaybackService : Service(), SupertonicTTS.ProgressListener, AudioManager.
             return
         }
 
-        if (!outputFile.parentFile?.exists() == true) {
+        if (outputFile.parentFile?.exists() != true) {
             Log.w(TAG, "Export: Output directory does not exist: ${outputFile.parent}")
             notifyListenerExportComplete(false, "")
             return
