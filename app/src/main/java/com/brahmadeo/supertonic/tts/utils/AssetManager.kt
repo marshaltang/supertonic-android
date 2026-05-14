@@ -10,8 +10,8 @@ import java.net.URL
 
 object AssetManager {
     private const val TAG = "AssetManager"
-    private const val BASE_URL_V1 = "https://huggingface.co/Supertone/supertonic/resolve/main"
-    private const val BASE_URL_V2 = "https://huggingface.co/Supertone/supertonic-2/resolve/main"
+    private const val BASE_URL_V1 = "https://hf-mirror.com/Supertone/supertonic/resolve/main"
+    private const val BASE_URL_V2 = "https://hf-mirror.com/Supertone/supertonic-2/resolve/main"
     
     private val V1_FILES = listOf(
         "onnx/duration_predictor.onnx",

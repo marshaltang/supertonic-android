@@ -14,7 +14,7 @@ configurations {
 cargo {
     module = "../rust"
     libname = "supertonic_tts"
-    targets = ["arm64", "arm", "x86", "x86_64"]
+    targets = ["arm64"]
     profile = "release"
     pythonCommand = "python"
 
@@ -86,7 +86,7 @@ tasks.configureEach { task ->
 android {
     namespace 'com.brahmadeo.supertonic.tts'
     compileSdk = 36
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "27.0.12077973"
 
     sourceSets {
         main {
@@ -98,11 +98,11 @@ android {
         applicationId "com.brahmadeo.supertonic.tts"
         minSdk 24
         targetSdk 36
-        versionCode 12
-        versionName "3.0.0"
+        versionCode 26051401
+        versionName "26.0514.01"
         
         ndk {
-            abiFilters "arm64-v8a", "armeabi-v7a", "x86", "x86_64"
+            abiFilters "arm64-v8a"
         }
     }
 
